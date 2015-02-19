@@ -1,0 +1,42 @@
+/*
+ * Created brightSPARK Labs
+ * www.brightsparklabs.com
+ */
+
+apply plugin: 'java'
+apply plugin: 'java-library-distribution'
+apply plugin: 'eclipse'
+apply plugin: 'findbugs'    // code quality
+apply plugin: 'jacoco'      // code coverage
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    compile 'com.google.guava:guava:18.0'
+    compile files('../asanti/build/libs/asanti.jar')
+}
+
+// create jar file
+distributions {
+    main {
+        baseName = 'insilico_standin'
+    }
+}
+
+// code quality report
+tasks.withType(FindBugs) {
+    reports {
+        xml.enabled = false
+        html.enabled = true
+    }
+ }
+
+// code coverage report
+jacocoTestReport {
+    reports {
+        html.enabled = true
+    }
+}
+
