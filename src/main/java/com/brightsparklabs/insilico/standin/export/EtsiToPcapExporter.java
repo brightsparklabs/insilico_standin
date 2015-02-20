@@ -11,35 +11,60 @@ import java.io.FileOutputStream;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.sql.Timestamp;
+import java.text.ParseException;
+import java.text.SimpleDateFormat;
+import java.util.Date;
+import java.util.TimeZone;
+import java.util.logging.Level;
 import java.util.logging.Logger;
 
 import com.brightsparklabs.asanti.model.data.AsnData;
 import com.brightsparklabs.asanti.reader.AsnBerFileReader;
+import com.google.common.base.Charsets;
 import com.google.common.collect.ImmutableList;
-import com.google.common.io.BaseEncoding;
 
+/**
+ * Supports exporting the payloads in an ETSI file as PCAP data.
+ * <p>
+ * This is an example to demonstrate the use of the Asanti library. A more
+ * resilient implementation will be provided in Insilico when it is ported to
+ * use Asanti. This class should be used as an initial step to understanding the
+ * behaviour and performance of Asanti.
+ * <p>
+ * The code in this class has been derived from:
+ * insilico.core.etsi.util.ETSIPCAPConverter
+ *
+ * @author brightSPARK Labs <support@brightsparklabs.com>
+ */
 public class EtsiToPcapExporter
 {
-
     // -------------------------------------------------------------------------
     // CONSTANTS
     // -------------------------------------------------------------------------
 
-    private static final String TAG_CC_PAYLOAD = "/2/1";
-    private static final String TAG_CC_CONTENTS = "/2/1/2";
+    /** tag containing the timestamp of a CCPayload */
+    private static final String TAG_CC_PAYLOAD_TIMESTAMP = "/2/1/1";
 
+    /** tag containing the content of an IPCC */
     private static final String TAG_IPCC_CONTENT = "/2/1/2/2/1/0";
-    // Pattern PATTERN_IPCC = Pattern.compile(TAG_IPCC + "/\\d+.*");
+
+    /** tag containing the content of a UTMSCC */
     private static final String TAG_UMTSCC_CONTENT = "/2/1/2/4";
+
+    /** tag containing the content of a L2CC (over PPP) */
     private static final String TAG_PPP_CONTENT = "/2/1/2/6/4";
-    // Pattern PATTERN_PPP = Pattern.compile(TAG_PPP + "/\\d+.*");
+
+    /** tag containing the content of a L2CC (over ethernet) */
     private static final String TAG_ETHERNET_CONTENT = "/2/1/2/6/5";
-    // Pattern PATTERN_ETHERNET = Pattern.compile(TAG_ETHERNET + "/\\d+.*");
+
+    /** tag containing the content of an IPMMCC */
     private static final String TAG_IPMMCC_CONTENT = "/2/1/2/12/1";
-    // Pattern PATTERN_IPMMCC = Pattern.compile(TAG_IPMMCC_CONTENT + "/\\d+.*");
+
+    /** tag containing the content of an email */
     private static final String TAG_EMAIL_CONTENT = "/2/1/2/1/2";
+
+    /** tag containing the content of an EPSCC */
     private static final String TAG_EPSCC_CONTENT = "/2/1/2/15";
-    // Pattern PATTERN_EPSCC = Pattern.compile(TAG_EPSCC + "/\\d+.*");
 
     /** magic number for PCAP Header */
     private static final byte[] MAGIC_NUMBER = { (byte) 0xA1, (byte) 0xB2, (byte) 0xC3, (byte) 0xD4 };
@@ -49,9 +74,6 @@ public class EtsiToPcapExporter
 
     /** minor version for PCAP Header */
     private static final byte[] MINOR_VERSION = { 0x00, 0x04 };
-
-    /** maximum history to check for duplicate packets */
-    private static final int DUPLICATE_CHECK_WINDOW_SIZE = 200;
 
     /** offset in seconds from GMT/UTC */
     private static final int GMT_OFFSET = 0;
@@ -69,28 +91,53 @@ public class EtsiToPcapExporter
     /** class logger */
     private static Logger log = Logger.getLogger(EtsiToPcapExporter.class.getName());
 
+    /**
+     * formatter for parsing timestamps of form:
+     * <year><month><day><hour><minute><second>.<microseconds>
+     */
+    private static SimpleDateFormat dateFormat = new SimpleDateFormat("yyyyMMddHHmmss.S");
+
     // -------------------------------------------------------------------------
     // PUBLIC METHODS
     // -------------------------------------------------------------------------
 
+    /**
+     * Exports the PCAP data from the supplied ETSI file
+     *
+     * @param args
+     *            the first element in this array specifies the ETSI file to
+     *            parse
+     *
+     * @throws IOException
+     *             if any errors occur exporting the PCAP content
+     */
     public static void main(String[] args) throws IOException
     {
         final File pcapFile = EtsiToPcapExporter.export(new File(args[0]));
         log.info("PCAP file exported to: " + pcapFile.getAbsolutePath());
     }
 
+    /**
+     * Exports the PCAP data from the supplied ETSI file
+     *
+     * @param etsiFile
+     *            the ETSI file to parse
+     *
+     * @return the PCAP file created
+     *
+     * @throws IOException
+     *             if any errors occur exporting the PCAP content
+     *
+     * @throws IOException
+     */
     public static File export(File etsiFile) throws IOException
     {
         final ImmutableList<AsnData> pdus = AsnBerFileReader.read(etsiFile);
         final File pcapFile = File.createTempFile(etsiFile.getName(), ".pcap");
         final BufferedOutputStream out = new BufferedOutputStream(new FileOutputStream(pcapFile));
 
-        final AsnData firstPdu = pdus.get(0);
-        for (final String rawTag : firstPdu.getRawTags())
-        {
-        }
-
         // write global header
+        final AsnData firstPdu = pdus.get(0);
         final LinkLayer linkLayer = getLinkLayer(firstPdu);
         final byte[] header = generateGlobalHeader(GMT_OFFSET, TIMESTAMP_ACCURACY, SNAP_LENGTH, linkLayer);
         out.write(header);
@@ -110,6 +157,15 @@ public class EtsiToPcapExporter
     // PRIVATE METHODS
     // -------------------------------------------------------------------------
 
+    /**
+     * Gets the link layer specified in the supplied PDU.
+     *
+     * @param pdu
+     *            PDU to query
+     *
+     * @return the link layer from the PDU; or {@link LinkLayer#Null} if it
+     *         could not be determined
+     */
     private static LinkLayer getLinkLayer(AsnData pdu)
     {
         return pdu.contains(TAG_IPCC_CONTENT) ? LinkLayer.RAW
@@ -196,20 +252,15 @@ public class EtsiToPcapExporter
      */
     private static byte[] generatePcapPacket(AsnData pdu)
     {
-        final Timestamp timestamp = new Timestamp(System.currentTimeMillis());
-        // create and write PCAP packet
+        final Timestamp timestamp = getPayloadTimestamp(pdu);
         final byte[] payload = getContent(pdu);
-
-        final String hexString = BaseEncoding.base16().encode(payload);
-        log.info("content: " + hexString);
-
-
         if (timestamp == null || payload == null || payload.length == 0) { return new byte[0]; }
 
         // will truncate instead of rounding
         final long seconds = timestamp.getTime() / 1000;
         final long microseconds = timestamp.getNanos() / 1000;
 
+        // create PCAP packet
         final byte[] result = new byte[payload.length + 16];
         toUInt32(seconds, result, 0);
         toUInt32(microseconds, result, 4);
@@ -220,6 +271,51 @@ public class EtsiToPcapExporter
         return result;
     }
 
+    /**
+     * Gets the timestamp of the payload within the supplied PDU.
+     *
+     * @param pdu
+     *            PDU to query
+     *
+     * @return the timestamp from the PDU; or the current time if it could not
+     *         be determined
+     */
+    private static Timestamp getPayloadTimestamp(AsnData pdu)
+    {
+        if (!pdu.contains(TAG_CC_PAYLOAD_TIMESTAMP))
+        {
+            log.warning("PDU missing timestamp. Using current time.");
+            return new Timestamp(System.currentTimeMillis());
+        }
+
+        final byte[] timestampBytes = pdu.getBytes(TAG_CC_PAYLOAD_TIMESTAMP);
+        // ASN.1 GeneralizedTime type is specified in UTC by default
+        final String dateString = new String(timestampBytes, Charsets.UTF_8);
+        try
+        {
+            synchronized (dateFormat)
+            {
+                dateFormat.setTimeZone(TimeZone.getTimeZone("UTC"));
+                final Date date = dateFormat.parse(dateString);
+                return new Timestamp(date.getTime());
+            }
+        }
+        catch (final ParseException e)
+        {
+            log.log(Level.WARNING, "Could not parse timestamp from {0}. Using current time.", dateString);
+            return new Timestamp(System.currentTimeMillis());
+        }
+    }
+
+    /**
+     * Gets the content from the payload within the supplied PDU.
+     *
+     * @param pdu
+     *            PDU to query
+     *
+     * @return the payload from the PDU; or an empty array if no content could
+     *         be found
+     */
     private static byte[] getContent(AsnData pdu)
     {
         return pdu.contains(TAG_IPCC_CONTENT) ? pdu.getBytes(TAG_IPCC_CONTENT)
@@ -242,7 +338,6 @@ public class EtsiToPcapExporter
      */
     public static enum LinkLayer
     {
-
         Null(0), // Loopback
         EN10MB(1), // 10Mb, 100Mb and 1Gb Ethernet
         EN3MB(2), // Experimental Ethernet
