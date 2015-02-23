@@ -15,7 +15,7 @@ repositories {
 
 dependencies {
     compile 'com.google.guava:guava:18.0'
-    compile files('../asanti/build/libs/asanti.jar')
+    compile 'com.brightsparklabs:asanti:0.1.0'
 
     runtime 'org.bouncycastle:bcprov-jdk16:1.45'
 }

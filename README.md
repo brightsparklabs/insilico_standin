@@ -5,6 +5,14 @@
 A stand-in library for Insilico to test the behaviour of Asanti. This will
 eventually be integrated into Insilico directly. In the interim it is used to help us understand the API and performance requirements of Asanti.
 
+## Setup and Build
+
+```bash
+git clone git@github.com:brightsparklabs/insilico_standin.git
+cd insilico_standin
+gradle assemble
+```
+
 ## Licenses
 
 Refer to the LICENSE file for details.
